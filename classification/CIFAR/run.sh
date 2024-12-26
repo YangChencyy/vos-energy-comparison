@@ -1,5 +1,6 @@
 methods=(pretrained oe_tune)
-data_models=(cifar10_wrn cifar100_wrn)
+# data_models=(cifar10_wrn cifar100_wrn)
+data_models=(mnist_dense)
 gpu=0
 
 if [ "$1" = "MSP" ]; then

@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import torchvision.transforms as trn
 import torchvision.datasets as dset
+from torchvision.datasets import MNIST, FashionMNIST
 import torch.nn.functional as F
 # from models.wrn import WideResNet
 # from models.densenet import DenseNet3
@@ -15,6 +16,26 @@ from models.wrn_virtual import WideResNet
 from models.densenet import DenseNet3
 from skimage.filters import gaussian as gblur
 from PIL import Image as PILImage
+
+
+# Transform for 3-channel input
+mean = [0.5, 0.5, 0.5]
+std = [0.5, 0.5, 0.5]
+
+train_transform = trn.Compose([
+    trn.Resize(32),  # Resize to CIFAR size (optional)
+    trn.ToTensor(),
+    trn.Lambda(lambda x: x.repeat(3, 1, 1)),  # Repeat grayscale channel to RGB
+    trn.Normalize(mean, std),
+])
+
+test_transform = trn.Compose([
+    trn.Resize(32),  # Resize to CIFAR size (optional)
+    trn.ToTensor(),
+    trn.Lambda(lambda x: x.repeat(3, 1, 1)),  # Repeat grayscale channel to RGB
+    trn.Normalize(mean, std),
+])
+
 
 # go through rigamaroo to do ...utils.display_results import show_performance
 if __package__ is None:
@@ -54,18 +75,31 @@ print(args)
 # torch.manual_seed(1)
 # np.random.seed(1)
 
-# mean and standard deviation of channels of CIFAR-10 images
-mean = [x / 255 for x in [125.3, 123.0, 113.9]]
-std = [x / 255 for x in [63.0, 62.1, 66.7]]
+# TODO: Update here is we are using 3 channels for MNIST and FashionMNIST (specific parameters you used for the three channels)
+mean = [0.5, 0.5, 0.5]  # Mean for 3-channel normalization
+std = [0.5, 0.5, 0.5]   # Std for 3-channel normalization
+
+# # mean and standard deviation of channels of CIFAR-10 images
+# mean = [x / 255 for x in [125.3, 123.0, 113.9]]
+# std = [x / 255 for x in [63.0, 62.1, 66.7]]
 
 test_transform = trn.Compose([trn.ToTensor(), trn.Normalize(mean, std)])
 
-if 'cifar10_' in args.method_name:
-    test_data = dset.CIFAR10('/nobackup-slow/dataset/cifarpy', train=False, transform=test_transform)
+
+if 'mnist_' in args.method_name:
+    test_data = MNIST(root='./data', train=False, transform=test_transform, download=True)
     num_classes = 10
-else:
-    test_data = dset.CIFAR100('/nobackup-slow/dataset/cifarpy', train=False, transform=test_transform)
-    num_classes = 100
+elif 'fashionmnist_' in args.method_name:
+    test_data = FashionMNIST(root='./data', train=False, transform=test_transform, download=True)
+    num_classes = 10
+
+
+# if 'cifar10_' in args.method_name:
+#     test_data = dset.CIFAR10('/nobackup-slow/dataset/cifarpy', train=False, transform=test_transform)
+#     num_classes = 10
+# else:
+#     test_data = dset.CIFAR100('/nobackup-slow/dataset/cifarpy', train=False, transform=test_transform)
+#     num_classes = 100
 
 
 test_loader = torch.utils.data.DataLoader(test_data, batch_size=args.test_bs, shuffle=False,
@@ -74,6 +108,7 @@ test_loader = torch.utils.data.DataLoader(test_data, batch_size=args.test_bs, sh
 # Create model
 if args.model_name == 'res':
     net = WideResNet(args.layers, num_classes, args.widen_factor, dropRate=args.droprate)
+    
 else:
     net = DenseNet3(100, num_classes, 12, reduction=0.5, bottleneck=True, dropRate=0.0, normalizer=None,
                          k=None, info=None)
@@ -204,7 +239,9 @@ print('Error Rate {:.2f}'.format(100 * num_wrong / (num_wrong + num_right)))
 
 # /////////////// End Detection Prelims ///////////////
 
-print('\nUsing CIFAR-10 as typical data') if num_classes == 10 else print('\nUsing CIFAR-100 as typical data')
+# print('\nUsing CIFAR-10 as typical data') if num_classes == 10 else print('\nUsing CIFAR-100 as typical data')
+print('\nUsing MNIST as typical data')
+
 
 # /////////////// Error Detection ///////////////
 
@@ -241,57 +278,62 @@ def get_and_print_results(ood_loader, num_to_avg=args.num_to_avg):
         print_measures(auroc, aupr, fpr, args.method_name)
 
 
-# /////////////// Textures ///////////////
-ood_data = dset.ImageFolder(root="/nobackup-slow/dataset/dtd/images",
-                            transform=trn.Compose([trn.Resize(32), trn.CenterCrop(32),
-                                                   trn.ToTensor(), trn.Normalize(mean, std)]))
-ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
-                                         num_workers=4, pin_memory=True)
-print('\n\nTexture Detection')
-get_and_print_results(ood_loader)
+# TODO: Add more datasets here
+ood_data = FashionMNIST(root='./data', train=False, transform=test_transform, download=True)
+ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=False, num_workers=args.prefetch, pin_memory=True)
 
-# /////////////// SVHN /////////////// # cropped and no sampling of the test set
-ood_data = svhn.SVHN(root='/nobackup-slow/dataset/svhn/', split="test",
-                     transform=trn.Compose(
-                         [#trn.Resize(32),
-                         trn.ToTensor(), trn.Normalize(mean, std)]), download=False)
-ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
-                                         num_workers=2, pin_memory=True)
-print('\n\nSVHN Detection')
-get_and_print_results(ood_loader)
 
-# /////////////// Places365 ///////////////
-ood_data = dset.ImageFolder(root="/nobackup-slow/dataset/places365/",
-                            transform=trn.Compose([trn.Resize(32), trn.CenterCrop(32),
-                                                   trn.ToTensor(), trn.Normalize(mean, std)]))
-ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
-                                         num_workers=2, pin_memory=True)
-print('\n\nPlaces365 Detection')
-get_and_print_results(ood_loader)
+# # /////////////// Textures ///////////////
+# ood_data = dset.ImageFolder(root="/nobackup-slow/dataset/dtd/images",
+#                             transform=trn.Compose([trn.Resize(32), trn.CenterCrop(32),
+#                                                    trn.ToTensor(), trn.Normalize(mean, std)]))
+# ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
+#                                          num_workers=4, pin_memory=True)
+# print('\n\nTexture Detection')
+# get_and_print_results(ood_loader)
 
-# /////////////// LSUN-C ///////////////
-ood_data = dset.ImageFolder(root="/nobackup-slow/dataset/LSUN_C",
-                            transform=trn.Compose([trn.ToTensor(), trn.Normalize(mean, std)]))
-ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
-                                         num_workers=1, pin_memory=True)
-print('\n\nLSUN_C Detection')
-get_and_print_results(ood_loader)
+# # /////////////// SVHN /////////////// # cropped and no sampling of the test set
+# ood_data = svhn.SVHN(root='/nobackup-slow/dataset/svhn/', split="test",
+#                      transform=trn.Compose(
+#                          [#trn.Resize(32),
+#                          trn.ToTensor(), trn.Normalize(mean, std)]), download=False)
+# ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
+#                                          num_workers=2, pin_memory=True)
+# print('\n\nSVHN Detection')
+# get_and_print_results(ood_loader)
 
-# /////////////// LSUN-R ///////////////
-ood_data = dset.ImageFolder(root="/nobackup-slow/dataset/LSUN_resize",
-                            transform=trn.Compose([trn.ToTensor(), trn.Normalize(mean, std)]))
-ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
-                                         num_workers=1, pin_memory=True)
-print('\n\nLSUN_Resize Detection')
-get_and_print_results(ood_loader)
+# # /////////////// Places365 ///////////////
+# ood_data = dset.ImageFolder(root="/nobackup-slow/dataset/places365/",
+#                             transform=trn.Compose([trn.Resize(32), trn.CenterCrop(32),
+#                                                    trn.ToTensor(), trn.Normalize(mean, std)]))
+# ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
+#                                          num_workers=2, pin_memory=True)
+# print('\n\nPlaces365 Detection')
+# get_and_print_results(ood_loader)
 
-# /////////////// iSUN ///////////////
-ood_data = dset.ImageFolder(root="/nobackup-slow/dataset/iSUN",
-                            transform=trn.Compose([trn.ToTensor(), trn.Normalize(mean, std)]))
-ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
-                                         num_workers=1, pin_memory=True)
-print('\n\niSUN Detection')
-get_and_print_results(ood_loader)
+# # /////////////// LSUN-C ///////////////
+# ood_data = dset.ImageFolder(root="/nobackup-slow/dataset/LSUN_C",
+#                             transform=trn.Compose([trn.ToTensor(), trn.Normalize(mean, std)]))
+# ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
+#                                          num_workers=1, pin_memory=True)
+# print('\n\nLSUN_C Detection')
+# get_and_print_results(ood_loader)
+
+# # /////////////// LSUN-R ///////////////
+# ood_data = dset.ImageFolder(root="/nobackup-slow/dataset/LSUN_resize",
+#                             transform=trn.Compose([trn.ToTensor(), trn.Normalize(mean, std)]))
+# ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
+#                                          num_workers=1, pin_memory=True)
+# print('\n\nLSUN_Resize Detection')
+# get_and_print_results(ood_loader)
+
+# # /////////////// iSUN ///////////////
+# ood_data = dset.ImageFolder(root="/nobackup-slow/dataset/iSUN",
+#                             transform=trn.Compose([trn.ToTensor(), trn.Normalize(mean, std)]))
+# ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
+#                                          num_workers=1, pin_memory=True)
+# print('\n\niSUN Detection')
+# get_and_print_results(ood_loader)
 
 # /////////////// Mean Results ///////////////
 

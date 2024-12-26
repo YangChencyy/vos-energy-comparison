@@ -12,21 +12,25 @@ import torchvision.datasets as dset
 import torch.nn.functional as F
 from tqdm import tqdm
 from models.wrn import WideResNet
+from torchvision.datasets import MNIST, FashionMNIST
+from models.densenet import DenseNet3
+
+
 
 if __package__ is None:
     import sys
     from os import path
 
     sys.path.append(path.dirname(path.dirname(path.abspath(__file__))))
-    from utils.tinyimages_80mn_loader import TinyImages
+    # from utils.tinyimages_80mn_loader import TinyImages
     from utils.validation_dataset import validation_split
 
 parser = argparse.ArgumentParser(description='Tunes a CIFAR Classifier with OE',
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('dataset', type=str, choices=['cifar10', 'cifar100'],
-                    help='Choose between CIFAR-10, CIFAR-100.')
+parser.add_argument('dataset', type=str, choices=['cifar10', 'cifar100', 'mnist'],
+                    help='Choose between CIFAR-10, CIFAR-100, MNIST.')
 parser.add_argument('--model', '-m', type=str, default='allconv',
-                    choices=['allconv', 'wrn', 'densenet'], help='Choose architecture.')
+                    choices=['allconv', 'wrn', 'dense'], help='Choose architecture.')
 parser.add_argument('--calibration', '-c', action='store_true',
                     help='Train a model to be used for calibration. This holds out some data for validation.')
 # Optimization options
@@ -71,22 +75,42 @@ torch.manual_seed(1)
 np.random.seed(args.seed)
 
 # mean and standard deviation of channels of CIFAR-10 images
-mean = [x / 255 for x in [125.3, 123.0, 113.9]]
-std = [x / 255 for x in [63.0, 62.1, 66.7]]
+# mean = [x / 255 for x in [125.3, 123.0, 113.9]]
+# std = [x / 255 for x in [63.0, 62.1, 66.7]]
+mean = [0.5, 0.5, 0.5]
+std = [0.5, 0.5, 0.5]
 
-train_transform = trn.Compose([trn.RandomHorizontalFlip(), trn.RandomCrop(32, padding=4),
-                               trn.ToTensor(), trn.Normalize(mean, std)])
-test_transform = trn.Compose([trn.ToTensor(), trn.Normalize(mean, std)])
+# train_transform = trn.Compose([trn.RandomHorizontalFlip(), trn.RandomCrop(32, padding=4),
+#                                trn.ToTensor(), trn.Normalize(mean, std)])
+# test_transform = trn.Compose([trn.ToTensor(), trn.Normalize(mean, std)])
+train_transform = trn.Compose([
+    trn.Resize(32),  # Resize to 32x32
+    trn.RandomHorizontalFlip(),
+    trn.RandomCrop(32, padding=4),
+    trn.ToTensor(),
+    trn.Lambda(lambda x: x.repeat(3, 1, 1) if x.shape[0] == 1 else x),  # Convert grayscale to RGB
+    trn.Normalize(mean, std),
+])
+
+test_transform = trn.Compose([
+    trn.Resize(32),
+    trn.ToTensor(),
+    trn.Lambda(lambda x: x.repeat(3, 1, 1) if x.shape[0] == 1 else x),
+    trn.Normalize(mean, std),
+])
 
 if args.dataset == 'cifar10':
     train_data_in = dset.CIFAR10('../data/cifarpy', train=True, transform=train_transform)
     test_data = dset.CIFAR10('../data/cifarpy', train=False, transform=test_transform)
     num_classes = 10
+elif args.dataset == 'mnist':
+    train_data_in = dset.MNIST('../data', train=True, transform=train_transform, download=True)
+    test_data = dset.MNIST('../data', train=False, transform=test_transform, download=True)
+    num_classes = 10
 else:
     train_data_in = dset.CIFAR100('../data/cifarpy', train=True, transform=train_transform)
     test_data = dset.CIFAR100('../data/cifarpy', train=False, transform=test_transform)
     num_classes = 100
-
 
 calib_indicator = ''
 if args.calibration:
@@ -94,9 +118,11 @@ if args.calibration:
     calib_indicator = '_calib'
 
 
-ood_data = TinyImages(transform=trn.Compose(
-    [trn.ToTensor(), trn.ToPILImage(), trn.RandomCrop(32, padding=4),
-     trn.RandomHorizontalFlip(), trn.ToTensor(), trn.Normalize(mean, std)]))
+# ood_data = TinyImages(transform=trn.Compose(
+#     [trn.ToTensor(), trn.ToPILImage(), trn.RandomCrop(32, padding=4),
+#      trn.RandomHorizontalFlip(), trn.ToTensor(), trn.Normalize(mean, std)]))
+ood_data = dset.FashionMNIST(root='./data', train=True, transform=train_transform, download=True)
+
 
 train_loader_in = torch.utils.data.DataLoader(
     train_data_in,
@@ -114,7 +140,16 @@ test_loader = torch.utils.data.DataLoader(
     num_workers=args.prefetch, pin_memory=True)
 
 # Create model
-net = WideResNet(args.layers, num_classes, args.widen_factor, dropRate=args.droprate)
+# net = WideResNet(args.layers, num_classes, args.widen_factor, dropRate=args.droprate)
+# Create model
+if args.model == 'wrn':
+    net = WideResNet(args.layers, num_classes, args.widen_factor, dropRate=args.droprate)
+elif args.model == 'dense':
+    from models.densenet import DenseNet3
+    net = DenseNet3(100, num_classes, growth_rate=12, reduction=0.5, bottleneck=True, dropRate=0.0)
+else:
+    raise ValueError(f"Unsupported model type: {args.model}")
+
 
 def recursion_change_bn(module):
     if isinstance(module, torch.nn.BatchNorm2d):
@@ -136,8 +171,9 @@ if args.load != '':
             print('Model restored! Epoch:', i)
             model_found = True
             break
-    if not model_found:
-        assert False, "could not find model to restore"
+    # TODO: If you have a pretrained model on your side, store it at './snapshots/energy_ft/mnist_dense_s1_energy_ft_epoch_0.pt' and it should be load from the previous lines. Now it is training from scratch
+    # if not model_found:
+    #     assert False, "could not find model to restore"
 
 if args.ngpu > 1:
     net = torch.nn.DataParallel(net, device_ids=list(range(args.ngpu)))
@@ -173,6 +209,25 @@ def train():
     net.train()  # enter train mode
     loss_avg = 0.0
 
+
+    # for data, target in train_loader_in:
+    #     data, target = data.cuda(), target.cuda()
+
+    #     # forward
+    #     x = net(data)
+
+    #     # backward
+    #     scheduler.step()
+    #     optimizer.zero_grad()
+
+    #     loss = F.cross_entropy(x, target)
+    #     loss.backward()
+    #     optimizer.step()
+
+    #     # exponential moving average
+    #     loss_avg = loss_avg * 0.8 + float(loss) * 0.2
+
+
     # start at a random point of the outlier dataset; this induces more randomness without obliterating locality
     train_loader_out.dataset.offset = np.random.randint(len(train_loader_out.dataset))
     for in_set, out_set in zip(train_loader_in, train_loader_out):
@@ -202,6 +257,8 @@ def train():
 
         # exponential moving average
         loss_avg = loss_avg * 0.8 + float(loss) * 0.2
+
+
     state['train_loss'] = loss_avg
 
 
