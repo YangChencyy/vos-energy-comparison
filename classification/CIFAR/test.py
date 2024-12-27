@@ -83,7 +83,13 @@ std = [0.5, 0.5, 0.5]   # Std for 3-channel normalization
 # mean = [x / 255 for x in [125.3, 123.0, 113.9]]
 # std = [x / 255 for x in [63.0, 62.1, 66.7]]
 
-test_transform = trn.Compose([trn.ToTensor(), trn.Normalize(mean, std)])
+# test_transform = trn.Compose([trn.ToTensor(), trn.Normalize(mean, std)])
+test_transform = trn.Compose([
+    trn.Resize(32),
+    trn.ToTensor(),
+    trn.Lambda(lambda x: x.repeat(3, 1, 1)),
+    trn.Normalize(mean, std),
+])
 
 
 if 'mnist_' in args.method_name:
@@ -105,6 +111,15 @@ elif 'fashionmnist_' in args.method_name:
 test_loader = torch.utils.data.DataLoader(test_data, batch_size=args.test_bs, shuffle=False,
                                           num_workers=args.prefetch, pin_memory=True)
 
+                                          # Use the first 2000 samples for validation
+val_size = 2000
+val_data = torch.utils.data.Subset(test_data, range(val_size))
+test_data = torch.utils.data.Subset(test_data, range(val_size, len(test_data)))
+
+val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.test_bs, shuffle=False, num_workers=args.prefetch, pin_memory=True)
+test_loader = torch.utils.data.DataLoader(test_data, batch_size=args.test_bs, shuffle=False, num_workers=args.prefetch, pin_memory=True)
+
+
 # Create model
 if args.model_name == 'res':
     net = WideResNet(args.layers, num_classes, args.widen_factor, dropRate=args.droprate)
@@ -112,6 +127,8 @@ if args.model_name == 'res':
 else:
     net = DenseNet3(100, num_classes, 12, reduction=0.5, bottleneck=True, dropRate=0.0, normalizer=None,
                          k=None, info=None)
+
+
 start_epoch = 0
 
 # Restore model
@@ -231,7 +248,25 @@ elif args.score == 'M':
     in_score = lib.get_Mahalanobis_score(net, test_loader, num_classes, sample_mean, precision, count-1, args.noise, num_batches, in_dist=True)
     print(in_score[-3:], in_score[-103:-100])
 else:
-    in_score, right_score, wrong_score = get_ood_scores(test_loader, in_dist=True)
+    val_in_scores, _, _ = get_ood_scores(val_loader, in_dist=True)
+    threshold = np.percentile(val_in_scores, 5)  # Threshold at 5% FPR
+    # in_score, right_score, wrong_score = get_ood_scores(test_loader, in_dist=True)
+    test_in_scores, test_right_scores, test_wrong_scores = get_ood_scores(test_loader, in_dist=True)
+
+    test_in_correct = test_in_scores >= threshold
+    test_in_accuracy = np.mean(test_in_correct)
+    print(f"Test In-Distribution Accuracy: {test_in_accuracy * 100:.2f}%")
+
+    ood_correct = ood_scores < threshold
+    ood_accuracy = np.mean(ood_correct)
+    print(f"OOD Detection Accuracy: {ood_accuracy * 100:.2f}%")
+
+    all_scores = np.concatenate([test_in_scores, ood_scores])
+    all_labels = np.concatenate([np.ones(len(test_in_scores)), np.zeros(len(ood_scores))])  # 1 for in-dist, 0 for OOD
+    from sklearn.metrics import roc_auc_score
+    auroc = roc_auc_score(all_labels, -all_scores)  # Use negative scores if lower scores indicate OOD
+    print(f"AUROC: {auroc * 100:.2f}%")
+
 
 num_right = len(right_score)
 num_wrong = len(wrong_score)
